@@ -171,28 +171,40 @@ app.post("/pix", auth, async (req, res) => {
     console.log("🔥 RESPOSTA COMPLETA ELITEPAY:");
     console.dir(raw, { depth: null });
 
-    const data = raw.data || raw;
+    // 🔥 tenta TODOS formatos possíveis
+    const data =
+      raw?.data?.pix ||
+      raw?.data ||
+      raw?.pix ||
+      raw?.response ||
+      raw?.payment ||
+      raw;
 
+    // 🔥 tenta TODOS nomes possíveis de QR
     const qrCode =
       data.qr_code ||
       data.qrcode ||
       data.qrCode ||
       data.qr ||
-      data.pixQrCode;
+      data.pixQrCode ||
+      data.brcode ||
+      data.emv;
 
     const copia =
       data.pix_code ||
       data.payload ||
       data.copyPaste ||
       data.copy_paste ||
-      data.pixCopiaECola;
+      data.pixCopiaECola ||
+      data.brcode ||
+      data.emv;
 
     if (!qrCode || !copia) {
-      console.log("❌ NÃO VEIO QR:", data);
+      console.log("❌ FORMATO DESCONHECIDO:", raw);
 
       return res.status(500).json({
-        erro: "API não retornou QR válido",
-        retornoReal: data
+        erro: "API retornou formato desconhecido",
+        retorno: raw
       });
     }
 
