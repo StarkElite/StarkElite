@@ -280,8 +280,18 @@ app.post("/withdraw", auth, async (req, res) => {
 
 // ================= WEBHOOK =================
 app.post("/webhook", async (req, res) => {
+  const client = await pool.connect();
+
   try {
     const body = req.body.data || req.body;
+
+    console.log("📩 Webhook recebido:", body);
+
+    // 🔐 SEGURANÇA HEADER
+    if (req.headers["x-client-id"] !== process.env.ELITEPAY_CLIENT_ID) {
+      console.log("❌ Tentativa inválida de webhook");
+      return res.sendStatus(403);
+    }
 
     const external_id = body.external_id;
     const status = body.status;
@@ -289,50 +299,74 @@ app.post("/webhook", async (req, res) => {
 
     if (status !== "paid") return res.sendStatus(200);
 
-    const pedido = await pool.query(
+    const pedido = await client.query(
       "SELECT * FROM pedidos WHERE id=$1",
       [external_id]
     );
 
-    if (!pedido.rows[0] || pedido.rows[0].status === "paid")
+    if (!pedido.rows[0]) {
+      console.log("❌ Pedido não encontrado");
       return res.sendStatus(200);
+    }
+
+    // 🔁 PROTEÇÃO DUPLICIDADE
+    if (pedido.rows[0].status === "paid") {
+      console.log("⚠️ Pagamento já processado");
+      return res.sendStatus(200);
+    }
 
     const valorTotal = Number(amount);
-    const valorUser = valorTotal * 0.7;
-    const valorSistema = valorTotal * 0.3;
 
-    await pool.query("BEGIN");
+    // 🔒 VALIDAR VALOR ORIGINAL
+    if (valorTotal !== Number(pedido.rows[0].valor)) {
+      console.log("❌ Valor divergente:", valorTotal);
+      return res.sendStatus(400);
+    }
 
-    await pool.query(
-      "UPDATE pedidos SET status='paid' WHERE id=$1",
+    // 💰 SPLIT CORRETO (ARREDONDADO)
+    const valorUser = Math.floor(valorTotal * 0.7 * 100) / 100;
+    const valorSistema = Math.floor(valorTotal * 0.3 * 100) / 100;
+
+    await client.query("BEGIN");
+
+    // 🔒 UPDATE SEGURO
+    const update = await client.query(
+      "UPDATE pedidos SET status='paid' WHERE id=$1 AND status='pending'",
       [external_id]
     );
 
-    await pool.query(
+    if (update.rowCount === 0) {
+      await client.query("ROLLBACK");
+      console.log("⚠️ Pedido já atualizado por outra requisição");
+      return res.sendStatus(200);
+    }
+
+    await client.query(
       "UPDATE users SET saldo = saldo + $1 WHERE id=$2",
       [valorUser, pedido.rows[0].userid]
     );
 
-    await pool.query(
+    await client.query(
       "INSERT INTO ganhos (valor, userid, pedidoid) VALUES ($1,$2,$3)",
       [valorSistema, pedido.rows[0].userid, external_id]
     );
 
-    await pool.query(
+    await client.query(
       "INSERT INTO extrato (userid, tipo, valor, descricao) VALUES ($1,$2,$3,$4)",
       [pedido.rows[0].userid, "entrada", valorUser, "PIX recebido"]
     );
 
-    await pool.query("COMMIT");
+    await client.query("COMMIT");
+
+    console.log("✅ Pagamento processado com sucesso");
 
     res.sendStatus(200);
 
   } catch (err) {
-    await pool.query("ROLLBACK");
+    await client.query("ROLLBACK");
+    console.log("❌ Erro no webhook:", err);
     res.sendStatus(500);
+  } finally {
+    client.release();
   }
-});
-
-app.listen(PORT, () => {
-  console.log("🚀 Backend Stark Elite rodando");
 });
