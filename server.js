@@ -39,7 +39,6 @@ function emailTemplate(codigo) {
       <div style="text-align:center;font-size:32px;color:#00d4ff;margin:20px 0;font-weight:bold;">
         ${codigo}
       </div>
-      <p style="text-align:center;font-size:12px;">Código válido por poucos minutos</p>
     </div>
   </div>`;
 }
@@ -63,53 +62,6 @@ function auth(req, res, next) {
     res.sendStatus(401);
   }
 }
-
-// ================= SETUP =================
-app.get("/setup", async (req, res) => {
-  await pool.query(`
-    DROP TABLE IF EXISTS users;
-    DROP TABLE IF EXISTS pedidos;
-    DROP TABLE IF EXISTS extrato;
-    DROP TABLE IF EXISTS ganhos;
-
-    CREATE TABLE users (
-      id SERIAL PRIMARY KEY,
-      nome TEXT,
-      email TEXT UNIQUE,
-      senha TEXT,
-      cpf TEXT,
-      codigo TEXT,
-      verificado BOOLEAN DEFAULT false,
-      saldo FLOAT DEFAULT 0
-    );
-
-    CREATE TABLE pedidos (
-      id TEXT PRIMARY KEY,
-      userid INT,
-      valor FLOAT,
-      status TEXT
-    );
-
-    CREATE TABLE extrato (
-      id SERIAL PRIMARY KEY,
-      userid INT,
-      tipo TEXT,
-      valor FLOAT,
-      descricao TEXT,
-      data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE ganhos (
-      id SERIAL PRIMARY KEY,
-      valor FLOAT,
-      userid INT,
-      pedidoid TEXT,
-      data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  res.send("Banco pronto 🚀");
-});
 
 // ================= REGISTER =================
 app.post("/register", async (req, res) => {
@@ -139,7 +91,7 @@ app.post("/register", async (req, res) => {
     res.json({ message: "Código enviado" });
 
   } catch (err) {
-    res.status(500).json({ erro: "Erro" });
+    res.status(500).json({ erro: "Erro no cadastro" });
   }
 });
 
@@ -167,7 +119,7 @@ app.post("/login", async (req, res) => {
   res.json({ message: "Código enviado" });
 });
 
-// ================= VERIFY LOGIN =================
+// ================= VERIFY =================
 app.post("/verify-login", async (req, res) => {
   const { email, codigo } = req.body;
 
@@ -196,10 +148,14 @@ app.get("/extrato", auth, async (req, res) => {
   res.json(result.rows);
 });
 
-// ================= PIX =================
+// ================= PIX (CORRIGIDO) =================
 app.post("/pix", auth, async (req, res) => {
   try {
     const { valor } = req.body;
+
+    if (!valor || valor <= 0) {
+      return res.status(400).json({ erro: "Valor inválido" });
+    }
 
     const id = Date.now().toString();
 
@@ -211,7 +167,7 @@ app.post("/pix", auth, async (req, res) => {
     const response = await axios.post(
       "https://api.elitepaybr.com/api/v1/deposit",
       {
-        amount: valor,
+        amount: Number(valor),
         external_id: id
       },
       {
@@ -223,15 +179,34 @@ app.post("/pix", auth, async (req, res) => {
     );
 
     const data = response.data;
+    console.log("PIX RESPONSE:", data);
+
+    const qrCode =
+      data.qr_code ||
+      data.qrcode ||
+      data.qrCode ||
+      data.pixQrCode;
+
+    const copiaECola =
+      data.pix_code ||
+      data.payload ||
+      data.copyPaste ||
+      data.pixCopiaECola;
+
+    if (!qrCode || !copiaECola) {
+      console.log("❌ PIX INVÁLIDO:", data);
+      return res.status(500).json({ erro: "Falha ao gerar PIX" });
+    }
 
     res.json({
       valor,
-      qrCode: data.qr_code || data.qrcode,
-      pixCopiaECola: data.pix_code || data.payload
+      qrCode,
+      pixCopiaECola: copiaECola
     });
 
   } catch (err) {
-    res.status(500).json({ erro: "Erro PIX" });
+    console.error("❌ ERRO PIX:", err?.response?.data || err.message);
+    res.status(500).json({ erro: "Erro ao gerar PIX" });
   }
 });
 
@@ -243,9 +218,8 @@ app.post("/webhook", async (req, res) => {
     if (status !== "paid") return res.sendStatus(200);
 
     const pedido = await pool.query("SELECT * FROM pedidos WHERE id=$1", [external_id]);
-
-    if (!pedido.rows[0]) return res.sendStatus(200);
-    if (pedido.rows[0].status === "paid") return res.sendStatus(200);
+    if (!pedido.rows[0] || pedido.rows[0].status === "paid")
+      return res.sendStatus(200);
 
     const valorTotal = Number(amount);
     const valorUser = valorTotal * 0.7;
@@ -282,5 +256,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log("🚀 Sistema rodando profissional");
+  console.log("🚀 Backend Stark Elite rodando");
 });
