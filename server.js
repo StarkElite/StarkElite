@@ -100,7 +100,7 @@ app.post("/register", async (req, res) => {
 
     res.json({ message: "Código enviado" });
 
-  } catch (err) {
+  } catch {
     res.status(500).json({ erro: "Erro no cadastro" });
   }
 });
@@ -221,7 +221,7 @@ app.post("/pix", auth, async (req, res) => {
 
     res.json({ valor, qrCode: qr, pixCopiaECola: copia });
 
-  } catch (err) {
+  } catch {
     res.status(500).json({ erro: "Falha ao gerar PIX" });
   }
 });
@@ -273,7 +273,7 @@ app.post("/withdraw", auth, async (req, res) => {
 
     res.json({ sucesso: true });
 
-  } catch (err) {
+  } catch {
     res.status(500).json({ erro: "Erro ao sacar" });
   }
 });
@@ -287,9 +287,8 @@ app.post("/webhook", async (req, res) => {
 
     console.log("📩 Webhook recebido:", body);
 
-    // 🔐 SEGURANÇA HEADER
+    // 🔐 segurança
     if (req.headers["x-client-id"] !== process.env.ELITEPAY_CLIENT_ID) {
-      console.log("❌ Tentativa inválida de webhook");
       return res.sendStatus(403);
     }
 
@@ -304,32 +303,22 @@ app.post("/webhook", async (req, res) => {
       [external_id]
     );
 
-    if (!pedido.rows[0]) {
-      console.log("❌ Pedido não encontrado");
-      return res.sendStatus(200);
-    }
-
-    // 🔁 PROTEÇÃO DUPLICIDADE
-    if (pedido.rows[0].status === "paid") {
-      console.log("⚠️ Pagamento já processado");
-      return res.sendStatus(200);
-    }
+    if (!pedido.rows[0]) return res.sendStatus(200);
+    if (pedido.rows[0].status === "paid") return res.sendStatus(200);
 
     const valorTotal = Number(amount);
 
-    // 🔒 VALIDAR VALOR ORIGINAL
+    // 🔒 valida valor
     if (valorTotal !== Number(pedido.rows[0].valor)) {
-      console.log("❌ Valor divergente:", valorTotal);
       return res.sendStatus(400);
     }
 
-    // 💰 SPLIT CORRETO (ARREDONDADO)
+    // 💰 split corrigido
     const valorUser = Math.floor(valorTotal * 0.7 * 100) / 100;
     const valorSistema = Math.floor(valorTotal * 0.3 * 100) / 100;
 
     await client.query("BEGIN");
 
-    // 🔒 UPDATE SEGURO
     const update = await client.query(
       "UPDATE pedidos SET status='paid' WHERE id=$1 AND status='pending'",
       [external_id]
@@ -337,7 +326,6 @@ app.post("/webhook", async (req, res) => {
 
     if (update.rowCount === 0) {
       await client.query("ROLLBACK");
-      console.log("⚠️ Pedido já atualizado por outra requisição");
       return res.sendStatus(200);
     }
 
@@ -358,15 +346,16 @@ app.post("/webhook", async (req, res) => {
 
     await client.query("COMMIT");
 
-    console.log("✅ Pagamento processado com sucesso");
-
     res.sendStatus(200);
 
   } catch (err) {
     await client.query("ROLLBACK");
-    console.log("❌ Erro no webhook:", err);
     res.sendStatus(500);
   } finally {
     client.release();
   }
+});
+
+app.listen(PORT, () => {
+  console.log("🚀 Backend Stark Elite rodando");
 });
