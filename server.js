@@ -171,46 +171,46 @@ app.post("/pix", auth, async (req, res) => {
     console.log("🔥 RESPOSTA COMPLETA ELITEPAY:");
     console.dir(raw, { depth: null });
 
-    // 🔥 tenta TODOS formatos possíveis
-    const data =
-      raw?.data?.pix ||
-      raw?.data ||
-      raw?.pix ||
-      raw?.response ||
-      raw?.payment ||
-      raw;
+    // 🔥 função que procura QR em qualquer lugar
+    function findPixData(obj) {
+      let qr = null;
+      let copia = null;
 
-    // 🔥 tenta TODOS nomes possíveis de QR
-    const qrCode =
-      data.qr_code ||
-      data.qrcode ||
-      data.qrCode ||
-      data.qr ||
-      data.pixQrCode ||
-      data.brcode ||
-      data.emv;
+      function search(o) {
+        if (!o || typeof o !== "object") return;
 
-    const copia =
-      data.pix_code ||
-      data.payload ||
-      data.copyPaste ||
-      data.copy_paste ||
-      data.pixCopiaECola ||
-      data.brcode ||
-      data.emv;
+        for (const key in o) {
+          const value = o[key];
 
-    if (!qrCode || !copia) {
-      console.log("❌ FORMATO DESCONHECIDO:", raw);
+          if (typeof value === "string") {
+            if (!qr && value.startsWith("data:image")) qr = value;
+            if (!copia && value.startsWith("000201")) copia = value;
+          }
+
+          if (typeof value === "object") {
+            search(value);
+          }
+        }
+      }
+
+      search(obj);
+      return { qr, copia };
+    }
+
+    const { qr, copia } = findPixData(raw);
+
+    if (!qr || !copia) {
+      console.log("❌ NÃO FOI POSSÍVEL ENCONTRAR PIX:", raw);
 
       return res.status(500).json({
-        erro: "API retornou formato desconhecido",
+        erro: "Formato desconhecido da API",
         retorno: raw
       });
     }
 
     res.json({
       valor,
-      qrCode,
+      qrCode: qr,
       pixCopiaECola: copia
     });
 
