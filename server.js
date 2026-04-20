@@ -30,6 +30,20 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+function emailTemplate(codigo) {
+  return `
+  <div style="background:#0b0f1a;padding:40px;font-family:Arial;color:#fff">
+    <div style="max-width:500px;margin:auto;background:#111827;padding:30px;border-radius:12px;border:1px solid #1f2937">
+      <h2 style="color:#00d4ff;text-align:center;">🔐 Stark Elite Pay</h2>
+      <p style="text-align:center;">Seu código de verificação:</p>
+      <div style="text-align:center;font-size:32px;color:#00d4ff;margin:20px 0;font-weight:bold;">
+        ${codigo}
+      </div>
+      <p style="text-align:center;font-size:12px;">Código válido por poucos minutos</p>
+    </div>
+  </div>`;
+}
+
 // ================= BANCO =================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -55,6 +69,8 @@ app.get("/setup", async (req, res) => {
   await pool.query(`
     DROP TABLE IF EXISTS users;
     DROP TABLE IF EXISTS pedidos;
+    DROP TABLE IF EXISTS extrato;
+    DROP TABLE IF EXISTS ganhos;
 
     CREATE TABLE users (
       id SERIAL PRIMARY KEY,
@@ -73,9 +89,26 @@ app.get("/setup", async (req, res) => {
       valor FLOAT,
       status TEXT
     );
+
+    CREATE TABLE extrato (
+      id SERIAL PRIMARY KEY,
+      userid INT,
+      tipo TEXT,
+      valor FLOAT,
+      descricao TEXT,
+      data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE ganhos (
+      id SERIAL PRIMARY KEY,
+      valor FLOAT,
+      userid INT,
+      pedidoid TEXT,
+      data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
-  res.send("Banco atualizado 🚀");
+  res.send("Banco pronto 🚀");
 });
 
 // ================= REGISTER =================
@@ -99,32 +132,15 @@ app.post("/register", async (req, res) => {
 
     await transporter.sendMail({
       to: email,
-      subject: "🔐 Código de cadastro",
-      html: `<h1>${codigo}</h1>`
+      subject: "🔐 Código Stark Elite Pay",
+      html: emailTemplate(codigo)
     });
 
     res.json({ message: "Código enviado" });
 
   } catch (err) {
-    if (err.code === "23505")
-      return res.status(400).json({ erro: "Email já cadastrado" });
-
-    res.status(500).json({ erro: "Erro interno" });
+    res.status(500).json({ erro: "Erro" });
   }
-});
-
-// ================= VERIFY =================
-app.post("/verify", async (req, res) => {
-  const { email, codigo } = req.body;
-
-  const user = await pool.query("SELECT * FROM users WHERE email=$1", [email]);
-
-  if (!user.rows[0] || user.rows[0].codigo !== codigo)
-    return res.status(400).json({ erro: "Código inválido" });
-
-  await pool.query("UPDATE users SET verificado=true WHERE email=$1", [email]);
-
-  res.json({ message: "Conta verificada" });
 });
 
 // ================= LOGIN =================
@@ -136,7 +152,6 @@ app.post("/login", async (req, res) => {
   if (!user.rows[0]) return res.status(400).json({ erro: "Usuário não existe" });
 
   const ok = await bcrypt.compare(senha, user.rows[0].senha);
-
   if (!ok) return res.status(400).json({ erro: "Senha inválida" });
 
   const codigo = Math.floor(100000 + Math.random() * 900000).toString();
@@ -146,7 +161,7 @@ app.post("/login", async (req, res) => {
   await transporter.sendMail({
     to: email,
     subject: "🔑 Código de login",
-    html: `<h1>${codigo}</h1>`
+    html: emailTemplate(codigo)
   });
 
   res.json({ message: "Código enviado" });
@@ -172,19 +187,19 @@ app.get("/saldo", auth, async (req, res) => {
   res.json(result.rows[0]);
 });
 
-// ================= GERAR PIX =================
-app.post("/gerar-pix", auth, async (req, res) => {
+// ================= EXTRATO =================
+app.get("/extrato", auth, async (req, res) => {
+  const result = await pool.query(
+    "SELECT * FROM extrato WHERE userid=$1 ORDER BY data DESC",
+    [req.userId]
+  );
+  res.json(result.rows);
+});
+
+// ================= PIX =================
+app.post("/pix", auth, async (req, res) => {
   try {
     const { valor } = req.body;
-
-    if (!Number.isFinite(valor))
-      return res.status(400).json({ erro: "Valor inválido" });
-
-    if (valor < 10)
-      return res.status(400).json({ erro: "Mínimo R$10" });
-
-    if (valor > 2000)
-      return res.status(400).json({ erro: "Máximo R$2000" });
 
     const id = Date.now().toString();
 
@@ -202,17 +217,21 @@ app.post("/gerar-pix", auth, async (req, res) => {
       {
         headers: {
           "x-client-id": process.env.ELITEPAY_CLIENT_ID,
-          "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET,
-          "Content-Type": "application/json"
+          "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET
         }
       }
     );
 
-    res.json(response.data);
+    const data = response.data;
+
+    res.json({
+      valor,
+      qrCode: data.qr_code || data.qrcode,
+      pixCopiaECola: data.pix_code || data.payload
+    });
 
   } catch (err) {
-    console.error(err.response?.data || err);
-    res.status(500).json({ erro: "Erro ao gerar Pix" });
+    res.status(500).json({ erro: "Erro PIX" });
   }
 });
 
@@ -223,16 +242,14 @@ app.post("/webhook", async (req, res) => {
 
     if (status !== "paid") return res.sendStatus(200);
 
-    const pedido = await pool.query(
-      "SELECT * FROM pedidos WHERE id=$1",
-      [external_id]
-    );
+    const pedido = await pool.query("SELECT * FROM pedidos WHERE id=$1", [external_id]);
 
     if (!pedido.rows[0]) return res.sendStatus(200);
     if (pedido.rows[0].status === "paid") return res.sendStatus(200);
 
-    const userId = pedido.rows[0].userid;
-    const valorUser = amount * 0.7;
+    const valorTotal = Number(amount);
+    const valorUser = valorTotal * 0.7;
+    const valorSistema = valorTotal * 0.3;
 
     await pool.query("BEGIN");
 
@@ -240,7 +257,17 @@ app.post("/webhook", async (req, res) => {
 
     await pool.query(
       "UPDATE users SET saldo = saldo + $1 WHERE id=$2",
-      [valorUser, userId]
+      [valorUser, pedido.rows[0].userid]
+    );
+
+    await pool.query(
+      "INSERT INTO ganhos (valor, userid, pedidoid) VALUES ($1,$2,$3)",
+      [valorSistema, pedido.rows[0].userid, external_id]
+    );
+
+    await pool.query(
+      "INSERT INTO extrato (userid, tipo, valor, descricao) VALUES ($1,$2,$3,$4)",
+      [pedido.rows[0].userid, "entrada", valorUser, "PIX recebido"]
     );
 
     await pool.query("COMMIT");
@@ -254,68 +281,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ================= SAQUE =================
-app.post("/confirmar-saque", auth, async (req, res) => {
-  const client = await pool.connect();
-
-  try {
-    const { valor, chavePix, tipo } = req.body;
-
-    if (!Number.isFinite(valor))
-      return res.status(400).json({ erro: "Valor inválido" });
-
-    if (valor < 50)
-      return res.status(400).json({ erro: "Saque mínimo R$50" });
-
-    if (valor > 1000)
-      return res.status(400).json({ erro: "Saque máximo R$1000" });
-
-    await client.query("BEGIN");
-
-    const user = await client.query(
-      "SELECT saldo FROM users WHERE id=$1 FOR UPDATE",
-      [req.userId]
-    );
-
-    if (user.rows[0].saldo < valor) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ erro: "Saldo insuficiente" });
-    }
-
-    await axios.post(
-      "https://api.elitepaybr.com/api/v1/withdraw",
-      {
-        amount: valor,
-        pixKey: chavePix,
-        pixKeyType: tipo
-      },
-      {
-        headers: {
-          "x-client-id": process.env.ELITEPAY_CLIENT_ID,
-          "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    await client.query(
-      "UPDATE users SET saldo = saldo - $1 WHERE id=$2",
-      [valor, req.userId]
-    );
-
-    await client.query("COMMIT");
-
-    res.json({ message: "Saque enviado com sucesso" });
-
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error(err.response?.data || err);
-    res.status(500).json({ erro: "Erro no saque" });
-  } finally {
-    client.release();
-  }
-});
-
 app.listen(PORT, () => {
-  console.log("🚀 Rodando...");
+  console.log("🚀 Sistema rodando profissional");
 });
