@@ -91,6 +91,7 @@ app.post("/register", async (req, res) => {
     res.json({ message: "Código enviado" });
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ erro: "Erro no cadastro" });
   }
 });
@@ -149,8 +150,6 @@ app.post("/pix", auth, async (req, res) => {
       [id, req.userId, valor, "pending"]
     );
 
-    console.log("🔑 CLIENT ID:", process.env.ELITEPAY_CLIENT_ID);
-
     const response = await axios.post(
       "https://api.elitepaybr.com/api/v1/deposit",
       {
@@ -167,27 +166,33 @@ app.post("/pix", auth, async (req, res) => {
       }
     );
 
-    const data = response.data;
+    const raw = response.data;
 
-    console.log("📦 RESPOSTA ELITEPAY:", data);
+    console.log("🔥 RESPOSTA COMPLETA ELITEPAY:");
+    console.dir(raw, { depth: null });
+
+    const data = raw.data || raw;
 
     const qrCode =
       data.qr_code ||
       data.qrcode ||
       data.qrCode ||
+      data.qr ||
       data.pixQrCode;
 
     const copia =
       data.pix_code ||
       data.payload ||
       data.copyPaste ||
+      data.copy_paste ||
       data.pixCopiaECola;
 
     if (!qrCode || !copia) {
-      console.log("❌ PIX INVÁLIDO:", data);
+      console.log("❌ NÃO VEIO QR:", data);
+
       return res.status(500).json({
         erro: "API não retornou QR válido",
-        debug: data
+        retornoReal: data
       });
     }
 
