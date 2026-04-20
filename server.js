@@ -133,22 +133,7 @@ app.post("/verify-login", async (req, res) => {
   res.json({ token });
 });
 
-// ================= SALDO =================
-app.get("/saldo", auth, async (req, res) => {
-  const result = await pool.query("SELECT saldo FROM users WHERE id=$1", [req.userId]);
-  res.json(result.rows[0]);
-});
-
-// ================= EXTRATO =================
-app.get("/extrato", auth, async (req, res) => {
-  const result = await pool.query(
-    "SELECT * FROM extrato WHERE userid=$1 ORDER BY data DESC",
-    [req.userId]
-  );
-  res.json(result.rows);
-});
-
-// ================= PIX (CORRIGIDO) =================
+// ================= PIX =================
 app.post("/pix", auth, async (req, res) => {
   try {
     const { valor } = req.body;
@@ -164,22 +149,27 @@ app.post("/pix", auth, async (req, res) => {
       [id, req.userId, valor, "pending"]
     );
 
+    console.log("🔑 CLIENT ID:", process.env.ELITEPAY_CLIENT_ID);
+
     const response = await axios.post(
       "https://api.elitepaybr.com/api/v1/deposit",
       {
         amount: Number(valor),
-        external_id: id
+        external_id: id,
+        description: "Stark Elite Pay"
       },
       {
         headers: {
           "x-client-id": process.env.ELITEPAY_CLIENT_ID,
-          "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET
+          "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET,
+          "Content-Type": "application/json"
         }
       }
     );
 
     const data = response.data;
-    console.log("PIX RESPONSE:", data);
+
+    console.log("📦 RESPOSTA ELITEPAY:", data);
 
     const qrCode =
       data.qr_code ||
@@ -187,26 +177,36 @@ app.post("/pix", auth, async (req, res) => {
       data.qrCode ||
       data.pixQrCode;
 
-    const copiaECola =
+    const copia =
       data.pix_code ||
       data.payload ||
       data.copyPaste ||
       data.pixCopiaECola;
 
-    if (!qrCode || !copiaECola) {
+    if (!qrCode || !copia) {
       console.log("❌ PIX INVÁLIDO:", data);
-      return res.status(500).json({ erro: "Falha ao gerar PIX" });
+      return res.status(500).json({
+        erro: "API não retornou QR válido",
+        debug: data
+      });
     }
 
     res.json({
       valor,
       qrCode,
-      pixCopiaECola: copiaECola
+      pixCopiaECola: copia
     });
 
   } catch (err) {
-    console.error("❌ ERRO PIX:", err?.response?.data || err.message);
-    res.status(500).json({ erro: "Erro ao gerar PIX" });
+    console.log("❌ ERRO COMPLETO:");
+    console.log("STATUS:", err.response?.status);
+    console.log("DATA:", err.response?.data);
+    console.log("MSG:", err.message);
+
+    res.status(500).json({
+      erro: "Falha ao gerar PIX",
+      detalhe: err.response?.data || err.message
+    });
   }
 });
 
@@ -218,6 +218,7 @@ app.post("/webhook", async (req, res) => {
     if (status !== "paid") return res.sendStatus(200);
 
     const pedido = await pool.query("SELECT * FROM pedidos WHERE id=$1", [external_id]);
+
     if (!pedido.rows[0] || pedido.rows[0].status === "paid")
       return res.sendStatus(200);
 
