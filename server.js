@@ -11,7 +11,12 @@ const rateLimit = require("express-rate-limit");
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
 
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -51,15 +56,20 @@ const pool = new Pool({
 
 // ================= AUTH =================
 function auth(req, res, next) {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) return res.sendStatus(401);
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    return res.status(401).json({ erro: "Token ausente" });
+  }
+
+  const token = authHeader.split(" ")[1];
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.userId = decoded.id;
     next();
   } catch {
-    res.sendStatus(401);
+    return res.status(401).json({ erro: "Token inválido" });
   }
 }
 
@@ -78,7 +88,7 @@ app.post("/register", async (req, res) => {
     const codigo = Math.floor(100000 + Math.random() * 900000).toString();
 
     await pool.query(
-      "INSERT INTO users (nome,email,senha,cpf,codigo) VALUES ($1,$2,$3,$4,$5)",
+      "INSERT INTO users (nome,email,senha,cpf,codigo,saldo) VALUES ($1,$2,$3,$4,$5,0)",
       [nome, email, hash, cpf, codigo]
     );
 
@@ -91,7 +101,6 @@ app.post("/register", async (req, res) => {
     res.json({ message: "Código enviado" });
 
   } catch (err) {
-    console.error(err);
     res.status(500).json({ erro: "Erro no cadastro" });
   }
 });
@@ -134,6 +143,23 @@ app.post("/verify-login", async (req, res) => {
   res.json({ token });
 });
 
+// ================= SALDO =================
+app.get("/api/user/balance", auth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT saldo FROM users WHERE id=$1",
+      [req.userId]
+    );
+
+    res.json({
+      balance: Number(result.rows[0]?.saldo || 0)
+    });
+
+  } catch {
+    res.json({ balance: 0 });
+  }
+});
+
 // ================= PIX =================
 app.post("/pix", auth, async (req, res) => {
   try {
@@ -160,36 +186,26 @@ app.post("/pix", auth, async (req, res) => {
       {
         headers: {
           "x-client-id": process.env.ELITEPAY_CLIENT_ID,
-          "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET,
-          "Content-Type": "application/json"
+          "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET
         }
       }
     );
 
     const raw = response.data;
 
-    console.log("🔥 RESPOSTA COMPLETA ELITEPAY:");
-    console.dir(raw, { depth: null });
-
-    // 🔥 função que procura QR em qualquer lugar
     function findPixData(obj) {
       let qr = null;
       let copia = null;
 
       function search(o) {
         if (!o || typeof o !== "object") return;
-
         for (const key in o) {
           const value = o[key];
-
           if (typeof value === "string") {
             if (!qr && value.startsWith("data:image")) qr = value;
             if (!copia && value.startsWith("000201")) copia = value;
           }
-
-          if (typeof value === "object") {
-            search(value);
-          }
+          if (typeof value === "object") search(value);
         }
       }
 
@@ -200,41 +216,83 @@ app.post("/pix", auth, async (req, res) => {
     const { qr, copia } = findPixData(raw);
 
     if (!qr || !copia) {
-      console.log("❌ NÃO FOI POSSÍVEL ENCONTRAR PIX:", raw);
-
-      return res.status(500).json({
-        erro: "Formato desconhecido da API",
-        retorno: raw
-      });
+      return res.status(500).json({ erro: "Erro ao gerar PIX" });
     }
 
-    res.json({
-      valor,
-      qrCode: qr,
-      pixCopiaECola: copia
-    });
+    res.json({ valor, qrCode: qr, pixCopiaECola: copia });
 
   } catch (err) {
-    console.log("❌ ERRO COMPLETO:");
-    console.log("STATUS:", err.response?.status);
-    console.log("DATA:", err.response?.data);
-    console.log("MSG:", err.message);
+    res.status(500).json({ erro: "Falha ao gerar PIX" });
+  }
+});
 
-    res.status(500).json({
-      erro: "Falha ao gerar PIX",
-      detalhe: err.response?.data || err.message
-    });
+// ================= SAQUE =================
+app.post("/withdraw", auth, async (req, res) => {
+  try {
+    const { valor, chave } = req.body;
+
+    if (!valor || valor <= 0) {
+      return res.status(400).json({ erro: "Valor inválido" });
+    }
+
+    const user = await pool.query(
+      "SELECT saldo FROM users WHERE id=$1",
+      [req.userId]
+    );
+
+    const saldo = Number(user.rows[0]?.saldo || 0);
+
+    if (saldo < valor) {
+      return res.status(400).json({ erro: "Saldo insuficiente" });
+    }
+
+    await axios.post(
+      "https://api.elitepaybr.com/api/v1/withdraw",
+      {
+        amount: Number(valor),
+        key: chave,
+        external_id: Date.now().toString()
+      },
+      {
+        headers: {
+          "x-client-id": process.env.ELITEPAY_CLIENT_ID,
+          "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET
+        }
+      }
+    );
+
+    await pool.query(
+      "UPDATE users SET saldo = saldo - $1 WHERE id=$2",
+      [valor, req.userId]
+    );
+
+    await pool.query(
+      "INSERT INTO extrato (userid, tipo, valor, descricao) VALUES ($1,$2,$3,$4)",
+      [req.userId, "saida", valor, "Saque PIX"]
+    );
+
+    res.json({ sucesso: true });
+
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao sacar" });
   }
 });
 
 // ================= WEBHOOK =================
 app.post("/webhook", async (req, res) => {
   try {
-    const { external_id, status, amount } = req.body;
+    const body = req.body.data || req.body;
+
+    const external_id = body.external_id;
+    const status = body.status;
+    const amount = body.amount;
 
     if (status !== "paid") return res.sendStatus(200);
 
-    const pedido = await pool.query("SELECT * FROM pedidos WHERE id=$1", [external_id]);
+    const pedido = await pool.query(
+      "SELECT * FROM pedidos WHERE id=$1",
+      [external_id]
+    );
 
     if (!pedido.rows[0] || pedido.rows[0].status === "paid")
       return res.sendStatus(200);
@@ -245,7 +303,10 @@ app.post("/webhook", async (req, res) => {
 
     await pool.query("BEGIN");
 
-    await pool.query("UPDATE pedidos SET status='paid' WHERE id=$1", [external_id]);
+    await pool.query(
+      "UPDATE pedidos SET status='paid' WHERE id=$1",
+      [external_id]
+    );
 
     await pool.query(
       "UPDATE users SET saldo = saldo + $1 WHERE id=$2",
@@ -268,7 +329,6 @@ app.post("/webhook", async (req, res) => {
 
   } catch (err) {
     await pool.query("ROLLBACK");
-    console.error(err);
     res.sendStatus(500);
   }
 });
