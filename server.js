@@ -283,37 +283,61 @@ app.post("/webhook", async (req, res) => {
   const client = await pool.connect();
 
   try {
-    const body = req.body.data || req.body;
+    console.log("📩 HEADERS:", req.headers);
+    console.log("📩 BODY:", JSON.stringify(req.body, null, 2));
 
-    console.log("📩 Webhook recebido:", body);
+    const body = req.body?.data || req.body;
 
-    // 🔐 segurança
-    if (req.headers["x-client-id"] !== process.env.ELITEPAY_CLIENT_ID) {
-      return res.sendStatus(403);
+    if (!body) {
+      console.log("❌ Body vazio");
+      return res.sendStatus(400);
     }
 
-    const external_id = body.external_id;
-    const status = body.status;
-    const amount = body.amount;
+    const external_id = body.external_id || body.id;
+    const status = String(body.status || "").toLowerCase();
+    const amount = Number(body.amount || body.value || 0);
 
-    if (status !== "paid") return res.sendStatus(200);
+    console.log("🔎 Dados extraídos:", {
+      external_id,
+      status,
+      amount
+    });
+
+    // ✅ aceitar múltiplos status válidos
+    const statusPago = ["paid", "approved", "completed"];
+
+    if (!statusPago.includes(status)) {
+      console.log("⏳ Status ignorado:", status);
+      return res.sendStatus(200);
+    }
 
     const pedido = await client.query(
       "SELECT * FROM pedidos WHERE id=$1",
       [external_id]
     );
 
-    if (!pedido.rows[0]) return res.sendStatus(200);
-    if (pedido.rows[0].status === "paid") return res.sendStatus(200);
+    if (!pedido.rows[0]) {
+      console.log("❌ Pedido não encontrado:", external_id);
+      return res.sendStatus(200);
+    }
+
+    if (pedido.rows[0].status === "paid") {
+      console.log("⚠️ Pedido já pago:", external_id);
+      return res.sendStatus(200);
+    }
 
     const valorTotal = Number(amount);
 
-    // 🔒 valida valor
-    if (valorTotal !== Number(pedido.rows[0].valor)) {
+    if (valorTotal <= 0) {
+      console.log("❌ Valor inválido");
       return res.sendStatus(400);
     }
 
-    // 💰 split corrigido
+    if (valorTotal !== Number(pedido.rows[0].valor)) {
+      console.log("❌ Valor divergente:", valorTotal, pedido.rows[0].valor);
+      return res.sendStatus(400);
+    }
+
     const valorUser = Math.floor(valorTotal * 0.7 * 100) / 100;
     const valorSistema = Math.floor(valorTotal * 0.3 * 100) / 100;
 
@@ -326,6 +350,7 @@ app.post("/webhook", async (req, res) => {
 
     if (update.rowCount === 0) {
       await client.query("ROLLBACK");
+      console.log("⚠️ Nada atualizado");
       return res.sendStatus(200);
     }
 
@@ -341,21 +366,26 @@ app.post("/webhook", async (req, res) => {
 
     await client.query(
       "INSERT INTO extrato (userid, tipo, valor, descricao) VALUES ($1,$2,$3,$4)",
-      [pedido.rows[0].userid, "entrada", valorUser, "PIX recebido"]
+      [pedido.rows[0].userid, "entrada", valorUser, "PIX confirmado"]
     );
 
     await client.query("COMMIT");
 
+    console.log("✅ Pagamento confirmado e saldo atualizado!");
+
     res.sendStatus(200);
 
   } catch (err) {
-    await client.query("ROLLBACK");
+    console.error("🔥 ERRO WEBHOOK:", err);
+
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
+
     res.sendStatus(500);
+
   } finally {
     client.release();
   }
 });
-
-app.listen(PORT, () => {
-  console.log("🚀 Backend Stark Elite rodando");
 });
