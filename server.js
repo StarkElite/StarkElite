@@ -188,36 +188,72 @@ app.get("/balance", auth, async (req, res) => {
 
 // ================= DEPOSIT =================
 app.post("/deposit", auth, async (req, res) => {
-  const valor = Number(req.body.valor);
+  try {
+    const valor = Number(req.body.valor);
 
-  // ✅ LIMITE ADICIONADO
-  if (!valor || valor < 5 || valor > 2000) {
-    return res.status(400).json({
-      erro: "Valor do PIX deve ser entre R$ 5,00 e R$ 2.000,00"
+    if (!valor || valor < 5 || valor > 2000) {
+      return res.status(400).json({
+        erro: "Valor do PIX deve ser entre R$ 5,00 e R$ 2.000,00"
+      });
+    }
+
+    const id = crypto.randomUUID();
+
+    await pool.query(
+      "INSERT INTO pedidos (id, userid, valor, status) VALUES ($1,$2,$3,'pending')",
+      [id, req.userId, valor]
+    );
+
+    const response = await axios.post(
+      "https://api.elitepaybr.com/api/v1/deposit",
+      {
+        amount: valor,
+        external_id: id
+      },
+      {
+        headers: {
+          "x-client-id": process.env.ELITEPAY_CLIENT_ID,
+          "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    console.log("🔥 RESPOSTA ELITEPAY:", response.data);
+
+    // ✅ NORMALIZA RETORNO (ESSENCIAL)
+    const qrCode =
+      response.data.qrCode ||
+      response.data.qr_code ||
+      response.data.qrcode ||
+      null;
+
+    const copiaECola =
+      response.data.pixCopiaECola ||
+      response.data.pix_code ||
+      response.data.payload ||
+      null;
+
+    if (!qrCode && !copiaECola) {
+      console.error("❌ QR inválido:", response.data);
+      return res.status(500).json({
+        erro: "Erro ao gerar QR Code PIX"
+      });
+    }
+
+    return res.json({
+      qrCode,
+      copiaECola,
+      original: response.data
+    });
+
+  } catch (err) {
+    console.error("❌ ERRO DEPOSIT:", err?.response?.data || err.message);
+    return res.status(500).json({
+      erro: "Erro ao gerar PIX"
     });
   }
-
-  const id = crypto.randomUUID();
-
-  await pool.query(
-    "INSERT INTO pedidos (id, userid, valor, status) VALUES ($1,$2,$3,'pending')",
-    [id, req.userId, valor]
-  );
-
-  const response = await axios.post(
-    "https://api.elitepaybr.com/api/v1/deposit",
-    { amount: valor, external_id: id },
-    {
-      headers: {
-        "x-client-id": process.env.ELITEPAY_CLIENT_ID,
-        "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET
-      }
-    }
-  );
-
-  res.json(response.data);
 });
-
 // ================= WITHDRAW =================
 app.post("/withdraw", auth, async (req, res) => {
   const client = await pool.connect();
