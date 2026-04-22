@@ -223,38 +223,35 @@ app.post("/deposit", auth, async (req, res) => {
 
     console.log("🔥 RESPOSTA ELITEPAY:", data);
 
-    // 🔥 PEGA QUALQUER POSSÍVEL CAMPO DE PIX
+    // 🔥 PEGA O COPIA E COLA (CORRETO)
     const copiaECola =
       data.pixCopiaECola ||
       data.pix_code ||
       data.payload ||
-      data.emv ||
-      data.copyPaste ||
-      data.brcode ||
       data.code ||
-      data.qr ||
+      null;
+
+    // 🔥 PEGA IMAGEM REAL DO QR (SE EXISTIR)
+    const qrImage =
+      data.qrCodeImage ||
+      data.qr_code ||
       data.qrCode ||
       null;
 
-    // 🔥 LIMPEZA (remove espaços/quebras)
-    const cleanPix = copiaECola ? copiaECola.toString().trim() : null;
-
-    // 🔥 VALIDA SE É UM PIX REAL (começa com 000201)
-    if (!cleanPix || !cleanPix.startsWith("000201")) {
-      console.error("❌ PIX INVÁLIDO RECEBIDO:", data);
+    if (!copiaECola) {
       return res.status(500).json({
-        erro: "PIX inválido retornado pela API",
+        erro: "PIX inválido retornado",
         raw: data
       });
     }
 
     return res.json({
-      copiaECola: cleanPix,
-      qrCode: cleanPix // frontend gera o QR
+      copiaECola,
+      qrCode: qrImage || copiaECola // usa imagem se tiver
     });
 
   } catch (err) {
-    console.error("❌ ERRO DEPOSIT:", err?.response?.data || err.message);
+    console.error("❌ ERRO:", err?.response?.data || err.message);
     return res.status(500).json({
       erro: "Erro ao gerar PIX"
     });
