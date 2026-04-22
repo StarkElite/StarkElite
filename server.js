@@ -219,32 +219,32 @@ app.post("/deposit", auth, async (req, res) => {
       }
     );
 
-    console.log("🔥 RESPOSTA ELITEPAY:", response.data);
+    const data = response.data;
 
-    // ✅ NORMALIZA RETORNO (ESSENCIAL)
-    const qrCode =
-      response.data.qrCode ||
-      response.data.qr_code ||
-      response.data.qrcode ||
-      null;
+    console.log("🔥 RESPOSTA ELITEPAY:", data);
 
+    // 🔥 PEGA QUALQUER FORMATO POSSÍVEL
     const copiaECola =
-      response.data.pixCopiaECola ||
-      response.data.pix_code ||
-      response.data.payload ||
+      data.pixCopiaECola ||
+      data.pix_code ||
+      data.payload ||
+      data.emv ||
+      data.copyPaste ||
+      data.brcode ||
       null;
 
-    if (!qrCode && !copiaECola) {
-      console.error("❌ QR inválido:", response.data);
+    if (!copiaECola) {
+      console.error("❌ PIX INVÁLIDO:", data);
       return res.status(500).json({
-        erro: "Erro ao gerar QR Code PIX"
+        erro: "API não retornou código PIX válido",
+        raw: data
       });
     }
 
+    // ✅ SEMPRE RETORNA O COPIA E COLA (QUE É O REAL)
     return res.json({
-      qrCode,
       copiaECola,
-      original: response.data
+      qrCode: copiaECola // frontend pode gerar QR disso
     });
 
   } catch (err) {
