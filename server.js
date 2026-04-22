@@ -388,4 +388,3 @@ app.post("/webhook", async (req, res) => {
     client.release();
   }
 });
-});
