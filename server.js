@@ -284,14 +284,31 @@ app.post("/withdraw", auth, async (req, res) => {
   }
 });
 
-// ================= WEBHOOK =================
+// ================= WEBHOOK (CORRIGIDO) =================
 app.post("/webhook", async (req, res) => {
   const client = await pool.connect();
 
   try {
+    console.log("🔥 WEBHOOK RECEBIDO:", JSON.stringify(req.body));
+
     const body = req.body?.data || req.body;
-    const id = body.external_id || body.transactionId;
+
+    const id =
+      body.external_id ||
+      body.transactionId ||
+      body.txid;
+
+    const status =
+      body.status?.toLowerCase() ||
+      body.payment_status?.toLowerCase();
+
     const amount = Number(body.value || body.amount || 0);
+
+    if (!id) return res.sendStatus(200);
+
+    if (status !== "paid" && status !== "approved") {
+      return res.sendStatus(200);
+    }
 
     await client.query("BEGIN");
 
@@ -300,30 +317,40 @@ app.post("/webhook", async (req, res) => {
       [id]
     );
 
-    if (pedido.rows[0] && pedido.rows[0].status !== "paid") {
-
-      const planos = {
-        500: 1000,
-        1000: 2000,
-        2000: 4000
-      };
-
-      const valorFinal = planos[Math.round(amount)] || amount;
-
-      await client.query("UPDATE pedidos SET status='paid' WHERE id=$1", [id]);
-
-      await client.query(
-        "UPDATE users SET saldo = saldo + $1 WHERE id=$2",
-        [valorFinal, pedido.rows[0].userid]
-      );
+    if (!pedido.rows.length) {
+      await client.query("ROLLBACK");
+      return res.sendStatus(200);
     }
 
+    if (pedido.rows[0].status === "paid" || pedido.rows[0].status === "PAGO") {
+      await client.query("ROLLBACK");
+      return res.sendStatus(200);
+    }
+
+    const planos = {
+      500: 1000,
+      1000: 2000,
+      2000: 4000
+    };
+
+    const valorFinal = planos[Math.round(amount)] || amount;
+
+    await client.query("UPDATE pedidos SET status='paid' WHERE id=$1", [id]);
+
+    await client.query(
+      "UPDATE users SET saldo = saldo + $1 WHERE id=$2",
+      [valorFinal, pedido.rows[0].userid]
+    );
+
     await client.query("COMMIT");
+
+    console.log("✅ PAGAMENTO CONFIRMADO:", id);
 
     res.sendStatus(200);
 
   } catch (err) {
     await client.query("ROLLBACK");
+    console.log("❌ ERRO WEBHOOK:", err);
     res.sendStatus(500);
   } finally {
     client.release();
