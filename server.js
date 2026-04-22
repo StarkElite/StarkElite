@@ -223,7 +223,7 @@ app.post("/deposit", auth, async (req, res) => {
 
     console.log("🔥 RESPOSTA ELITEPAY:", data);
 
-    // 🔥 PEGA QUALQUER FORMATO POSSÍVEL
+    // 🔥 PEGA QUALQUER POSSÍVEL CAMPO DE PIX
     const copiaECola =
       data.pixCopiaECola ||
       data.pix_code ||
@@ -231,20 +231,26 @@ app.post("/deposit", auth, async (req, res) => {
       data.emv ||
       data.copyPaste ||
       data.brcode ||
+      data.code ||
+      data.qr ||
+      data.qrCode ||
       null;
 
-    if (!copiaECola) {
-      console.error("❌ PIX INVÁLIDO:", data);
+    // 🔥 LIMPEZA (remove espaços/quebras)
+    const cleanPix = copiaECola ? copiaECola.toString().trim() : null;
+
+    // 🔥 VALIDA SE É UM PIX REAL (começa com 000201)
+    if (!cleanPix || !cleanPix.startsWith("000201")) {
+      console.error("❌ PIX INVÁLIDO RECEBIDO:", data);
       return res.status(500).json({
-        erro: "API não retornou código PIX válido",
+        erro: "PIX inválido retornado pela API",
         raw: data
       });
     }
 
-    // ✅ SEMPRE RETORNA O COPIA E COLA (QUE É O REAL)
     return res.json({
-      copiaECola,
-      qrCode: copiaECola // frontend pode gerar QR disso
+      copiaECola: cleanPix,
+      qrCode: cleanPix // frontend gera o QR
     });
 
   } catch (err) {
