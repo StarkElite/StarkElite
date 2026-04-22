@@ -75,9 +75,6 @@ function emailSaqueTemplate(valor, data) {
       <p style="text-align:center;color:#9ca3af;">
         ${data}
       </p>
-      <p style="text-align:center;color:#facc15;">
-        Se não foi você, altere sua senha imediatamente.
-      </p>
     </div>
   </div>`;
 }
@@ -122,7 +119,6 @@ app.post("/register", async (req, res) => {
     res.json({ message: "Código enviado" });
 
   } catch (err) {
-    console.error(err);
     res.status(500).json({ erro: "Erro cadastro" });
   }
 });
@@ -186,77 +182,60 @@ app.get("/balance", auth, async (req, res) => {
   res.json({ balance: Number(r.rows[0]?.saldo || 0) });
 });
 
-// ================= DEPOSIT =================
+// ================= DEPOSIT NORMAL =================
 app.post("/deposit", auth, async (req, res) => {
-  try {
-    const valor = Number(req.body.valor);
+  const valor = Number(req.body.valor);
+  const id = crypto.randomUUID();
 
-    if (!valor || valor < 5 || valor > 2000) {
-      return res.status(400).json({
-        erro: "Valor do PIX deve ser entre R$ 5,00 e R$ 2.000,00"
-      });
-    }
+  await pool.query(
+    "INSERT INTO pedidos (id, userid, valor, status) VALUES ($1,$2,$3,'pending')",
+    [id, req.userId, valor]
+  );
 
-    const id = crypto.randomUUID();
-
-    await pool.query(
-      "INSERT INTO pedidos (id, userid, valor, status) VALUES ($1,$2,$3,'pending')",
-      [id, req.userId, valor]
-    );
-
-    const response = await axios.post(
-      "https://api.elitepaybr.com/api/v1/deposit",
-      {
-        amount: valor,
-        external_id: id
-      },
-      {
-        headers: {
-          "x-client-id": process.env.ELITEPAY_CLIENT_ID,
-          "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET,
-          "Content-Type": "application/json"
-        }
+  const response = await axios.post(
+    "https://api.elitepaybr.com/api/v1/deposit",
+    { amount: valor, external_id: id },
+    {
+      headers: {
+        "x-client-id": process.env.ELITEPAY_CLIENT_ID,
+        "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET
       }
-    );
-
-    const data = response.data;
-
-    console.log("🔥 RESPOSTA ELITEPAY:", data);
-
-    // 🔥 PEGA O COPIA E COLA (CORRETO)
-    const copiaECola =
-      data.pixCopiaECola ||
-      data.pix_code ||
-      data.payload ||
-      data.code ||
-      null;
-
-    // 🔥 PEGA IMAGEM REAL DO QR (SE EXISTIR)
-    const qrImage =
-      data.qrCodeImage ||
-      data.qr_code ||
-      data.qrCode ||
-      null;
-
-    if (!copiaECola) {
-      return res.status(500).json({
-        erro: "PIX inválido retornado",
-        raw: data
-      });
     }
+  );
 
-    return res.json({
-      copiaECola,
-      qrCode: qrImage || copiaECola // usa imagem se tiver
-    });
-
-  } catch (err) {
-    console.error("❌ ERRO:", err?.response?.data || err.message);
-    return res.status(500).json({
-      erro: "Erro ao gerar PIX"
-    });
-  }
+  res.json(response.data);
 });
+
+// ================= DEPOSIT PLANOS =================
+app.post("/deposit-plan", auth, async (req, res) => {
+  const planos = [500, 1000, 2000];
+  const valor = Number(req.body.valor);
+
+  if (!planos.includes(valor)) {
+    return res.status(400).json({ erro: "Plano inválido" });
+  }
+
+  const id = crypto.randomUUID();
+
+  await pool.query(
+    "INSERT INTO pedidos (id, userid, valor, status) VALUES ($1,$2,$3,'pending')",
+    [id, req.userId, valor]
+  );
+
+  const response = await axios.post(
+    "https://api.elitepaybr.com/api/v1/deposit",
+    { amount: valor, external_id: id },
+    {
+      headers: {
+        "x-client-id": process.env.ELITEPAY_CLIENT_ID,
+        "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET
+      }
+    }
+  );
+
+  res.json(response.data);
+});
+
 // ================= WITHDRAW =================
 app.post("/withdraw", auth, async (req, res) => {
   const client = await pool.connect();
@@ -265,15 +244,8 @@ app.post("/withdraw", auth, async (req, res) => {
     const valor = Number(req.body.valor);
     const { chave } = req.body;
 
-    // ✅ LIMITE ADICIONADO
-    if (!valor || valor < 50 || valor > 1000) {
-      return res.status(400).json({
-        erro: "Saque deve ser entre R$ 50,00 e R$ 1.000,00"
-      });
-    }
-
     const user = await client.query(
-      "SELECT saldo,email FROM users WHERE id=$1 FOR UPDATE",
+      "SELECT saldo FROM users WHERE id=$1 FOR UPDATE",
       [req.userId]
     );
 
@@ -302,11 +274,10 @@ app.post("/withdraw", auth, async (req, res) => {
       }
     );
 
-    res.json({ ok: true, status: "pending" });
+    res.json({ ok: true });
 
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error(err);
     res.status(500).json({ erro: "Erro saque" });
   } finally {
     client.release();
@@ -319,15 +290,8 @@ app.post("/webhook", async (req, res) => {
 
   try {
     const body = req.body?.data || req.body;
-
     const id = body.external_id || body.transactionId;
-    const status = String(body.transactionState || body.status || "").toLowerCase();
     const amount = Number(body.value || body.amount || 0);
-
-    const aprovado = ["completo", "deposito_completo", "saque_completo"];
-
-    if (!aprovado.includes(status))
-      return res.sendStatus(200);
 
     await client.query("BEGIN");
 
@@ -337,38 +301,21 @@ app.post("/webhook", async (req, res) => {
     );
 
     if (pedido.rows[0] && pedido.rows[0].status !== "paid") {
+
+      const planos = {
+        500: 1000,
+        1000: 2000,
+        2000: 4000
+      };
+
+      const valorFinal = planos[Math.round(amount)] || amount;
+
       await client.query("UPDATE pedidos SET status='paid' WHERE id=$1", [id]);
+
       await client.query(
         "UPDATE users SET saldo = saldo + $1 WHERE id=$2",
-        [amount, pedido.rows[0].userid]
+        [valorFinal, pedido.rows[0].userid]
       );
-    }
-
-    const saque = await client.query(
-      "SELECT * FROM saques WHERE id=$1 FOR UPDATE",
-      [id]
-    );
-
-    if (saque.rows[0] && saque.rows[0].status !== "done") {
-      await client.query("UPDATE saques SET status='done' WHERE id=$1", [id]);
-
-      await client.query(
-        "UPDATE users SET saldo = saldo - $1 WHERE id=$2",
-        [amount, saque.rows[0].userid]
-      );
-
-      const user = await client.query(
-        "SELECT email FROM users WHERE id=$1",
-        [saque.rows[0].userid]
-      );
-
-      const data = new Date().toLocaleString("pt-BR");
-
-      await transporter.sendMail({
-        to: user.rows[0].email,
-        subject: "💸 Saque confirmado",
-        html: emailSaqueTemplate(amount, data)
-      });
     }
 
     await client.query("COMMIT");
@@ -377,14 +324,12 @@ app.post("/webhook", async (req, res) => {
 
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error(err);
     res.sendStatus(500);
   } finally {
     client.release();
   }
 });
 
-// ================= START =================
 app.listen(PORT, () => {
-  console.log("🚀 Banco rodando na porta", PORT);
+  console.log("🚀 rodando...");
 });
