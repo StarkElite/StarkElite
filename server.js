@@ -188,7 +188,15 @@ app.get("/balance", auth, async (req, res) => {
 
 // ================= DEPOSIT =================
 app.post("/deposit", auth, async (req, res) => {
-  const { valor } = req.body;
+  const valor = Number(req.body.valor);
+
+  // ✅ LIMITE ADICIONADO
+  if (!valor || valor < 5 || valor > 2000) {
+    return res.status(400).json({
+      erro: "Valor do PIX deve ser entre R$ 5,00 e R$ 2.000,00"
+    });
+  }
+
   const id = crypto.randomUUID();
 
   await pool.query(
@@ -215,7 +223,15 @@ app.post("/withdraw", auth, async (req, res) => {
   const client = await pool.connect();
 
   try {
-    const { valor, chave } = req.body;
+    const valor = Number(req.body.valor);
+    const { chave } = req.body;
+
+    // ✅ LIMITE ADICIONADO
+    if (!valor || valor < 50 || valor > 1000) {
+      return res.status(400).json({
+        erro: "Saque deve ser entre R$ 50,00 e R$ 1.000,00"
+      });
+    }
 
     const user = await client.query(
       "SELECT saldo,email FROM users WHERE id=$1 FOR UPDATE",
@@ -302,7 +318,6 @@ app.post("/webhook", async (req, res) => {
         [amount, saque.rows[0].userid]
       );
 
-      // 📩 EMAIL DE SAQUE CONFIRMADO
       const user = await client.query(
         "SELECT email FROM users WHERE id=$1",
         [saque.rows[0].userid]
