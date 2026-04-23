@@ -241,6 +241,7 @@ app.post("/deposit-plan", auth, async (req, res) => {
 
   res.json(response.data);
 });
+
 // ================= WEBHOOK (mantido igual) =================
 app.post("/webhook", async (req, res) => {
   console.log("webhook recebido", req.body);
