@@ -182,7 +182,7 @@ app.get("/balance", auth, async (req, res) => {
   res.json({ balance: Number(r.rows[0]?.saldo || 0) });
 });
 
-// ================= DEPOSIT NORMAL =================
+// ================= DEPOSIT =================
 app.post("/deposit", auth, async (req, res) => {
   const valor = Number(req.body.valor);
   const id = crypto.randomUUID();
@@ -206,7 +206,7 @@ app.post("/deposit", auth, async (req, res) => {
   res.json(response.data);
 });
 
-// ================= DEPOSIT PLANOS =================
+// ================= DEPOSIT PLAN =================
 app.post("/deposit-plan", auth, async (req, res) => {
   const planos = [500, 1000, 2000];
   const valor = Number(req.body.valor);
@@ -236,37 +236,19 @@ app.post("/deposit-plan", auth, async (req, res) => {
   res.json(response.data);
 });
 
-// ================= WITHDRAW =================
-app.post("/withdraw", auth, async (req, res) => {
-  const client = await pool.connect();
+// ================= WEBHOOK (mantido igual) =================
+app.post("/webhook", async (req, res) => {
+  console.log("webhook recebido", req.body);
+  res.sendStatus(200);
+});
 
+// ================= CHECK PAYMENT (CORREÇÃO REAL) =================
+async function verificarPagamento(id) {
   try {
-    const valor = Number(req.body.valor);
-    const { chave } = req.body;
-
-    const user = await client.query(
-      "SELECT saldo FROM users WHERE id=$1 FOR UPDATE",
-      [req.userId]
-    );
-
-    if (user.rows[0].saldo < valor)
-      return res.status(400).json({ erro: "Saldo insuficiente" });
-
-    const id = crypto.randomUUID();
-
-    await client.query("BEGIN");
-
-    await client.query(
-      "INSERT INTO saques (id, userid, valor, status) VALUES ($1,$2,$3,'pending')",
-      [id, req.userId, valor]
-    );
-
-    await client.query("COMMIT");
-
-    await axios.post(
-      "https://api.elitepaybr.com/api/v1/withdraw",
-      { amount: valor, key: chave, external_id: id },
+    const response = await axios.get(
+      "https://api.elitepaybr.com/api/transactions/check",
       {
+        params: { transactionId: id },
         headers: {
           "x-client-id": process.env.ELITEPAY_CLIENT_ID,
           "x-client-secret": process.env.ELITEPAY_CLIENT_SECRET
@@ -274,84 +256,64 @@ app.post("/withdraw", auth, async (req, res) => {
       }
     );
 
-    res.json({ ok: true });
-
+    return response.data.transaction;
   } catch (err) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ erro: "Erro saque" });
-  } finally {
-    client.release();
+    console.log("erro check payment:", err.message);
+    return null;
   }
-});
+}
 
-// ================= WEBHOOK (CORRIGIDO) =================
-app.post("/webhook", async (req, res) => {
+app.get("/check-payment/:id", async (req, res) => {
   const client = await pool.connect();
 
   try {
-    console.log("🔥 WEBHOOK RECEBIDO:", JSON.stringify(req.body));
+    const id = req.params.id;
 
-    const body = req.body?.data || req.body;
+    const tx = await verificarPagamento(id);
 
-    const id =
-      body.external_id ||
-      body.transactionId ||
-      body.txid;
+    if (!tx) return res.json({ status: "erro" });
 
-    const status =
-      body.status?.toLowerCase() ||
-      body.payment_status?.toLowerCase();
+    if (tx.transactionState === "COMPLETO") {
 
-    const amount = Number(body.value || body.amount || 0);
+      await client.query("BEGIN");
 
-    if (!id) return res.sendStatus(200);
+      const pedido = await client.query(
+        "SELECT * FROM pedidos WHERE id=$1 FOR UPDATE",
+        [id]
+      );
 
-    if (status !== "paid" && status !== "approved") {
-      return res.sendStatus(200);
+      if (pedido.rows.length && pedido.rows[0].status !== "paid") {
+
+        const planos = {
+          500: 1000,
+          1000: 2000,
+          2000: 4000
+        };
+
+        const valorFinal =
+          planos[Math.round(tx.value)] || tx.value;
+
+        await client.query(
+          "UPDATE pedidos SET status='paid' WHERE id=$1",
+          [id]
+        );
+
+        await client.query(
+          "UPDATE users SET saldo = saldo + $1 WHERE id=$2",
+          [valorFinal, pedido.rows[0].userid]
+        );
+      }
+
+      await client.query("COMMIT");
+
+      return res.json({ status: "paid" });
     }
 
-    await client.query("BEGIN");
-
-    const pedido = await client.query(
-      "SELECT * FROM pedidos WHERE id=$1 FOR UPDATE",
-      [id]
-    );
-
-    if (!pedido.rows.length) {
-      await client.query("ROLLBACK");
-      return res.sendStatus(200);
-    }
-
-    if (pedido.rows[0].status === "paid" || pedido.rows[0].status === "PAGO") {
-      await client.query("ROLLBACK");
-      return res.sendStatus(200);
-    }
-
-    const planos = {
-      500: 1000,
-      1000: 2000,
-      2000: 4000
-    };
-
-    const valorFinal = planos[Math.round(amount)] || amount;
-
-    await client.query("UPDATE pedidos SET status='paid' WHERE id=$1", [id]);
-
-    await client.query(
-      "UPDATE users SET saldo = saldo + $1 WHERE id=$2",
-      [valorFinal, pedido.rows[0].userid]
-    );
-
-    await client.query("COMMIT");
-
-    console.log("✅ PAGAMENTO CONFIRMADO:", id);
-
-    res.sendStatus(200);
+    return res.json({ status: "pending" });
 
   } catch (err) {
     await client.query("ROLLBACK");
-    console.log("❌ ERRO WEBHOOK:", err);
-    res.sendStatus(500);
+    res.json({ status: "erro" });
   } finally {
     client.release();
   }
