@@ -185,16 +185,12 @@ app.get("/balance", auth, async (req, res) => {
 // ================= DEPOSIT =================
 app.post("/deposit", auth, async (req, res) => {
   const valor = Number(req.body.valor);
-  const id = crypto.randomUUID();
 
-  await pool.query(
-    "INSERT INTO pedidos (id, userid, valor, status) VALUES ($1,$2,$3,'pending')",
-    [id, req.userId, valor]
-  );
+  const externalId = crypto.randomUUID();
 
   const response = await axios.post(
     "https://api.elitepaybr.com/api/v1/deposit",
-    { amount: valor, external_id: id },
+    { amount: valor, external_id: externalId },
     {
       headers: {
         "x-client-id": process.env.ELITEPAY_CLIENT_ID,
@@ -203,8 +199,16 @@ app.post("/deposit", auth, async (req, res) => {
     }
   );
 
+  const txId = response.data.transactionId;
+
+  await pool.query(
+    "INSERT INTO pedidos (id, userid, valor, status) VALUES ($1,$2,$3,'pending')",
+    [txId, req.userId, valor]
+  );
+
   res.json(response.data);
 });
+
 
 // ================= DEPOSIT PLAN =================
 app.post("/deposit-plan", auth, async (req, res) => {
@@ -215,16 +219,11 @@ app.post("/deposit-plan", auth, async (req, res) => {
     return res.status(400).json({ erro: "Plano inválido" });
   }
 
-  const id = crypto.randomUUID();
-
-  await pool.query(
-    "INSERT INTO pedidos (id, userid, valor, status) VALUES ($1,$2,$3,'pending')",
-    [id, req.userId, valor]
-  );
+  const externalId = crypto.randomUUID();
 
   const response = await axios.post(
     "https://api.elitepaybr.com/api/v1/deposit",
-    { amount: valor, external_id: id },
+    { amount: valor, external_id: externalId },
     {
       headers: {
         "x-client-id": process.env.ELITEPAY_CLIENT_ID,
@@ -233,9 +232,15 @@ app.post("/deposit-plan", auth, async (req, res) => {
     }
   );
 
+  const txId = response.data.transactionId;
+
+  await pool.query(
+    "INSERT INTO pedidos (id, userid, valor, status) VALUES ($1,$2,$3,'pending')",
+    [txId, req.userId, valor]
+  );
+
   res.json(response.data);
 });
-
 // ================= WEBHOOK (mantido igual) =================
 app.post("/webhook", async (req, res) => {
   console.log("webhook recebido", req.body);
